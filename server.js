@@ -123,7 +123,7 @@ async function getVouchers() {
     }
 }
 
-async function authorizeClient(clientMac) {
+async function authorizeClient(clientMac, duration = 10) {
     const cookie = await login();
     if (!cookie) {
         console.error("❌ Failed to retrieve session cookie.");
@@ -131,8 +131,8 @@ async function authorizeClient(clientMac) {
     }
 
     try {
-        // Create a new voucher
-        const newVoucher = await createVouchers(10); // 10 minutes duration
+        // Create a new voucher with specified duration
+        const newVoucher = await createVouchers(duration);
         if (!newVoucher) {
             throw new Error("Failed to create voucher");
         }
@@ -195,6 +195,7 @@ async function authorizeClient(clientMac) {
     }
 }
 
+
 async function testInternetConnection() {
     try {
         const response = await axios.get("https://www.google.com", {
@@ -210,9 +211,10 @@ async function testInternetConnection() {
 }
 
 // Updated POST endpoint to handle client authentication
+// Updated POST endpoint to handle duration
 app.post("/auth", async (req, res) => {
     try {
-        const { clientMac, apMac, timestamp, redirectUrl, ssid } = req.body;
+        const { clientMac, apMac, timestamp, redirectUrl, ssid, duration = 10 } = req.body;
 
         if (!clientMac) {
             return res.status(400).json({ 
@@ -221,14 +223,24 @@ app.post("/auth", async (req, res) => {
             });
         }
 
+        // Validate duration
+        const validDurations = [10, 20, 30, 60, 720, 1440];
+        if (!validDurations.includes(duration)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid duration specified"
+            });
+        }
+
         console.log("📡 Authorizing client:", {
             clientMac,
             apMac,
             ssid,
+            duration,
             timestamp: new Date(timestamp * 1000).toISOString()
         });
 
-        const authorized = await authorizeClient(clientMac);
+        const authorized = await authorizeClient(clientMac, duration);
 
         if (!authorized) {
             return res.status(500).json({ 
@@ -243,7 +255,8 @@ app.post("/auth", async (req, res) => {
             success: true, 
             mac: clientMac, 
             internetAccess,
-            redirectUrl: redirectUrl || null
+            redirectUrl: redirectUrl || null,
+            duration
         });
     } catch (error) {
         console.error("❌ Error in /auth:", error);
@@ -253,7 +266,6 @@ app.post("/auth", async (req, res) => {
         });
     }
 });
-
 // async function getVouchers() {
 //     const cookie = await login();
 //     if (!cookie) return [];
