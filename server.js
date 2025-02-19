@@ -16,11 +16,19 @@ const SITE = process.env.UNIFI_SITE
 const USERNAME = process.env.UNIFI_USERNAME
 const PASSWORD = process.env.UNIFI_PASSWORD
 
+const api = axios.create({
+    baseURL: `${UNIFI_URL}/api/s/${SITE}`,
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    withCredentials: true,
+  });
+
 // Axios instance for UniFi API
 const axiosInstance = axios.create({
+    baseURL: `${UNIFI_URL}/api/s/${SITE}`,
     httpsAgent: new https.Agent({
         rejectUnauthorized: false
     }),
+    withCredentials: true,
 });
 
 const login = async () => {
@@ -245,6 +253,24 @@ app.post("/auth", async (req, res) => {
         });
     }
 });
+
+// async function getVouchers() {
+//     const cookie = await login();
+//     if (!cookie) return [];
+  
+//     try {
+//       const response = await api.get("/stat/voucher", {
+//         headers: { Cookie: cookie },
+//       });
+  
+//       console.log("🚀 Raw Voucher Response:", JSON.stringify(response.data, null, 2));
+  
+//       return response.data.data || []; // Ensure we return an array
+//     } catch (error) {
+//       console.error("❌ Failed to retrieve vouchers:", error.response?.data || error.message);
+//       return [];
+//     }
+//   }
 
 app.get("/", (req, res) => {
     res.json({ message: "UniFi Hotspot Server Running" });
