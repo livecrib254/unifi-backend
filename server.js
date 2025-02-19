@@ -11,10 +11,10 @@ app.use(cors());
 const PORT = process.env.PORT || 5000;
 
 // UniFi Controller Credentials
-const UNIFI_URL = process.env.UNIFI_URL
-const SITE = process.env.UNIFI_SITE
-const USERNAME = process.env.UNIFI_USERNAME
-const PASSWORD = process.env.UNIFI_PASSWORD
+const UNIFI_URL = "https://45.12.28.150:8443";
+const SITE = "default";
+const USERNAME = "labtech";
+const PASSWORD = "m0t0m0t0";
 
 // Axios instance for UniFi API
 const axiosInstance = axios.create({
