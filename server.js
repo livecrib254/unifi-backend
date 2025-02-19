@@ -283,30 +283,26 @@ app.get("/auth", async (req, res) => {
 
 
   
-  // Logout Function
-//   async function logout(cookie) {
-//     try {
-//       await api.get("/logout", { headers: { Cookie: cookie } });
-//       console.log("Logged out successfully.");
-//     } catch (error) {
-//       console.error("Logout failed:", error.response?.data || error.message);
-//     }
-//   }
  
-app.get("/",(req, res)=>{
-   res.json({message: "Server Running"})
-} )
+  app.get("/", async (req, res) => {
+    try {
+        return res.json({ message: "Server Running" });
+    } catch (error) {
+        console.error("Error in /home:", error);
+        return res.status(500).json({ success: false, message: "Internal server error." });
+    }
+});
 
   
 
-(async () => {
-    // const cookie = await login();
-    //await getVouchers();
-    //  await getConnectedClients(cookie)
-    //  await findClientMac(cookie) 
-    //await getClients()
-    //await getMacAddressesForPrivateIPs()
-  })();
+// (async () => {
+//     // const cookie = await login();
+//     //await getVouchers();
+//     //  await getConnectedClients(cookie)
+//     //  await findClientMac(cookie) 
+//     //await getClients()
+//     //await getMacAddressesForPrivateIPs()
+//   })();
 
 // Start Server
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
