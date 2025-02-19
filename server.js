@@ -253,6 +253,23 @@ async function getMacAddressesForPrivateIPs() {
         return false;
     }
 }
+
+async function testInternetConnection() {
+    try {
+      const response = await axios.get("https://www.google.com", {
+        timeout: 5000, // Set a timeout to avoid long waits
+      });
+  
+      if (response.status === 200) {
+        console.log("✅ Internet connection is active.");
+        return true;
+      }
+    } catch (error) {
+      console.error("❌ No internet access:", error.message);
+      return false;
+    }
+  }
+  
 // API Route: Authenticate and check internet access
 app.get("/auth", async (req, res) => {
     try {
@@ -305,4 +322,4 @@ app.get("/auth", async (req, res) => {
 //   })();
 
 // Start Server
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT,() => console.log(`🚀 Server running on port ${PORT}`));
