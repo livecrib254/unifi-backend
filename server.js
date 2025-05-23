@@ -258,7 +258,7 @@ async function authorizeClient(clientMac, options = {}) {
   };
 
   if (newVoucher.qos_usage_quota) {
-    payload.bytes = +newVoucher.qos_usage_quota * 1024 * 1024;
+    payload.bytes = +newVoucher.qos_usage_quota * 1;
     payload.minutes = 0; // Unlimited time for data vouchers
   } else if (newVoucher.duration) {
     // Only set time limit if no data limit exists
