@@ -255,6 +255,8 @@ async function authorizeClient(clientMac, options = {}) {
     cmd: "authorize-guest",
     mac: clientMac.toLowerCase(),
     voucher: newVoucher.code,
+    minutes:0,
+    bytes:0
   };
 
   // Add time limit if it's a time-based voucher
@@ -263,7 +265,7 @@ async function authorizeClient(clientMac, options = {}) {
   }
 
   // Add data limit if it's a data-based voucher
-  if (newVoucher.bytes) {
+  if (newVoucher.qos_usage_quota) {
     payload. bytes = newVoucher.qos_usage_quota;
     // You might also need to specify it's unlimited time for data vouchers
     payload.minutes = newVoucher.duration; // or remove minutes entirely
