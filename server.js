@@ -255,7 +255,6 @@ async function authorizeClient(clientMac, options = {}) {
     cmd: "authorize-guest",
     mac: clientMac.toLowerCase(),
     voucher: newVoucher.code,
-    minutes:0,
   };
 
   // Add time limit if it's a time-based voucher
