@@ -16,11 +16,11 @@ const SITE = process.env.UNIFI_SITE
 const USERNAME = process.env.UNIFI_USERNAME
 const PASSWORD = process.env.UNIFI_PASSWORD
 
-const api = axios.create({
-    baseURL: `${UNIFI_URL}/api/s/${SITE}`,
-    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-    withCredentials: true,
-  });
+// const api = axios.create({
+//     baseURL: `${UNIFI_URL}/api/s/${SITE}`,
+//     httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+//     withCredentials: true,
+//   });
 
 // Axios instance for UniFi API
 const axiosInstance = axios.create({
@@ -102,6 +102,51 @@ async function createVouchers(duration = 10) {
     }
 }
 
+async function createDataVoucher(dataBytes) {
+    const cookie = await login();
+    if (!cookie) return null;
+    console.log(dataBytes)
+    try {
+        const response = await axios.post(
+            `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
+            {
+                cmd: "create-voucher",
+                n: 1,
+                quota: 1,
+                note: "Hotspot Data Auth",
+                bytes: dataBytes,
+                expire: 525600, // 365 days in minutes
+                expire_number: 365,
+                expire_unit: 1440, // 1440 = days (in minutes)
+                up: null,
+                down: null,
+                for_hotspot: true
+            },
+            {
+                headers: {
+                    Cookie: cookie,
+                    'Content-Type': 'application/json'
+                },
+                httpsAgent: new https.Agent({ rejectUnauthorized: false })
+            }
+        );
+        
+        console.log("Data voucher creation response:", JSON.stringify(response.data, null, 2));
+        
+        if (response.data?.meta?.rc === "ok") {
+            const vouchers = await getVouchers();
+            const latestVoucher = vouchers
+                .filter(v => v.note === "Hotspot Data Auth")
+                .sort((a, b) => b.create_time - a.create_time)[0];
+            return latestVoucher;
+        }
+        return null;
+    } catch (error) {
+        console.error("❌ Failed to create data voucher:", error.response?.data || error.message);
+        return null;
+    }
+}
+
 async function getVouchers() {
     const cookie = await login();
     if (!cookie) return [];
@@ -123,34 +168,81 @@ async function getVouchers() {
     }
 }
 
-async function authorizeClient(clientMac, duration = 10) {
+async function listSites() {
+    const cookie = await login();
+    if (!cookie) {
+        console.error("❌ Failed to retrieve session cookie for listing sites.");
+        return null;
+    }
+    
+    try {
+        const response = await axios.get(
+            `${UNIFI_URL}/api/self/sites`,
+            {
+                headers: {
+                    Cookie: cookie,
+                    'Content-Type': 'application/json'
+                },
+                httpsAgent: new https.Agent({ rejectUnauthorized: false })
+            }
+        );
+        
+        console.log("✅ Available sites:", JSON.stringify(response.data, null, 2));
+        
+        // Extract and display site info in a more readable format
+        if (response.data && response.data.data) {
+            console.log("\n📋 Sites Summary:");
+            response.data.data.forEach((site, index) => {
+                console.log(`${index + 1}. Name: "${site.name}" | ID: "${site._id}" | Description: "${site.desc}"`);
+            });
+        }
+        
+        return response.data;
+    } catch (error) {
+        console.error("❌ Failed to list sites:", error.response?.data || error.message);
+        return null;
+    }
+}
+
+async function authorizeClient(clientMac, options = {}) {
     const cookie = await login();
     if (!cookie) {
         console.error("❌ Failed to retrieve session cookie.");
         return false;
     }
 
+    const { duration, data } = options;
+     console.log(options)
+    let newVoucher;
+    if (duration) {
+        newVoucher = await createVouchers(duration);
+    } else if (data) {
+        // Assuming 1 MB = 1024 * 1024 bytes
+        const dataBytes = data 
+        newVoucher = await createDataVoucher(dataBytes);
+    } else {
+        throw new Error("Must provide either duration or data");
+    }
+
+    if (!newVoucher) {
+        throw new Error("Failed to create voucher");
+    }
+
+    const payload = {
+        cmd: "authorize-guest",
+        mac: clientMac.toLowerCase(),
+        voucher: newVoucher.code,
+        minutes: newVoucher.duration || undefined
+    };
+
+    console.log("🔑 Authorization attempt:", JSON.stringify(payload, null, 2));
+
     try {
-        // Create a new voucher with specified duration
-        const newVoucher = await createVouchers(duration);
-        if (!newVoucher) {
-            throw new Error("Failed to create voucher");
-        }
-
-        const payload = {
-            cmd: "authorize-guest",
-            mac: clientMac.toLowerCase(),
-            voucher: newVoucher.code,
-            minutes: newVoucher.duration
-        };
-
-        console.log("🔑 Authorization attempt:", JSON.stringify(payload, null, 2));
-
         const response = await axios.post(
             `${UNIFI_URL}/api/s/${SITE}/cmd/stamgr`,
             payload,
             {
-                headers: { 
+                headers: {
                     Cookie: cookie,
                     'Content-Type': 'application/json'
                 },
@@ -163,7 +255,7 @@ async function authorizeClient(clientMac, duration = 10) {
             return true;
         }
 
-        // Try alternative endpoint if first attempt fails
+        // Try fallback
         const altPayload = {
             cmd: "authorize-guest",
             mac: clientMac.toLowerCase(),
@@ -174,7 +266,7 @@ async function authorizeClient(clientMac, duration = 10) {
             `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
             altPayload,
             {
-                headers: { 
+                headers: {
                     Cookie: cookie,
                     'Content-Type': 'application/json'
                 },
@@ -182,18 +274,13 @@ async function authorizeClient(clientMac, duration = 10) {
             }
         );
 
-        if (altResponse.data.meta?.rc === "ok") {
-            console.log("✅ Authorization successful with alternative endpoint");
-            return true;
-        }
-
-        console.error("❌ Authorization failed with both attempts");
-        return false;
+        return altResponse.data.meta?.rc === "ok";
     } catch (error) {
         console.error("❌ Error during authorization:", error.response?.data || error.message);
         return false;
     }
 }
+
 
 
 async function testInternetConnection() {
@@ -211,61 +298,59 @@ async function testInternetConnection() {
 }
 
 // Updated POST endpoint to handle client authentication
-// Updated POST endpoint to handle duration
+
 app.post("/auth", async (req, res) => {
+    const { clientMac, duration, data } = req.body;
+
+    if (!clientMac) {
+        return res.status(400).json({ success: false, message: "Client MAC is required" });
+    }
+
     try {
-        const { clientMac, apMac, timestamp, redirectUrl, ssid, duration = 10 } = req.body;
-
-        if (!clientMac) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Client MAC address is required" 
-            });
-        }
-
-        // Validate duration
-        const validDurations = [10, 20, 30, 60, 720, 1440];
-        if (!validDurations.includes(duration)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid duration specified"
-            });
-        }
-
-        console.log("📡 Authorizing client:", {
-            clientMac,
-            apMac,
-            ssid,
-            duration,
-            timestamp: new Date(timestamp * 1000).toISOString()
-        });
-
-        const authorized = await authorizeClient(clientMac, duration);
+        const authorized = await authorizeClient(clientMac, { duration, data });
 
         if (!authorized) {
-            return res.status(500).json({ 
-                success: false, 
-                message: "Client authorization failed" 
-            });
+            return res.status(500).json({ success: false, message: "Authorization failed" });
         }
 
-        const internetAccess = await testInternetConnection();
-        
-        res.json({ 
-            success: true, 
-            mac: clientMac, 
-            internetAccess,
-            redirectUrl: redirectUrl || null,
-            duration
-        });
+        res.json({ success: true, message: "Client authorized", clientMac });
     } catch (error) {
-        console.error("❌ Error in /auth:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Internal server error" 
-        });
+        res.status(500).json({ success: false, message: "Server error", error: error.message });
     }
 });
+
+// Simulate M-Pesa STK Push Payment Success
+
+
+app.post("/simulate-payment", async (req, res) => {
+    const { phoneNumber, clientMac, duration, data } = req.body;
+
+    if (!phoneNumber || !clientMac) {
+        return res.status(400).json({ success: false, message: "Missing phone number or MAC" });
+    }
+
+    try {
+
+        // const authorized = await authorizeClient(clientMac, { duration, data });
+
+        // console.log("📲 Simulating payment for:", {
+        //     phoneNumber,
+        //     duration
+        // });
+
+        // // Normally, you'd validate payment status with Safaricom API
+        // // For simulation, we assume the payment was successful
+
+        // if (!authorized) {
+        //     return res.status(500).json({ success: false, message: "Authorization failed" });
+        // }
+
+        res.json({ success: true, message: "Payment simulated and client authorized", clientMac });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error", error: error.message });
+    }
+});
+
 // async function getVouchers() {
 //     const cookie = await login();
 //     if (!cookie) return [];
@@ -285,6 +370,7 @@ app.post("/auth", async (req, res) => {
 //   }
 
 app.get("/", (req, res) => {
+    listSites()
     res.json({ message: "UniFi Hotspot Server Running" });
 });
 
