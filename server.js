@@ -256,7 +256,6 @@ async function authorizeClient(clientMac, options = {}) {
     mac: clientMac.toLowerCase(),
     voucher: newVoucher.code,
     minutes:0,
-    bytes:0
   };
 
   // Add time limit if it's a time-based voucher
@@ -266,7 +265,7 @@ async function authorizeClient(clientMac, options = {}) {
 
   // Add data limit if it's a data-based voucher
   if (newVoucher.qos_usage_quota) {
-    payload. bytes = newVoucher.qos_usage_quota;
+    payload. bytes = +newVoucher.qos_usage_quota;
     // You might also need to specify it's unlimited time for data vouchers
     payload.minutes = newVoucher.duration; // or remove minutes entirely
   }
@@ -292,19 +291,19 @@ async function authorizeClient(clientMac, options = {}) {
     }
 
    
-    const altResponse = await axios.post(
-      `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
-      payload,
-      {
-        headers: {
-          Cookie: cookie,
-          "Content-Type": "application/json",
-        },
-        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-      }
-    );
+    // const altResponse = await axios.post(
+    //   `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
+    //   payload,
+    //   {
+    //     headers: {
+    //       Cookie: cookie,
+    //       "Content-Type": "application/json",
+    //     },
+    //     httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    // //   }
+    // // );
 
-    return altResponse.data.meta?.rc === "ok";
+    // return altResponse.data.meta?.rc === "ok";
   } catch (error) {
     console.error(
       "❌ Error during authorization:",
