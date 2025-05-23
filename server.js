@@ -242,7 +242,7 @@ async function authorizeClient(clientMac, options = {}) {
 
     
     // 🗑️ Delete old vouchers first
-    await deleteOldVouchersForClient(clientMac);
+   // await deleteOldVouchersForClient(clientMac);
 
     const { duration, data } = options;
     let newVoucher;
