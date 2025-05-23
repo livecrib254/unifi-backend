@@ -257,16 +257,14 @@ async function authorizeClient(clientMac, options = {}) {
     voucher: newVoucher.code,
   };
 
-  // Add time limit if it's a time-based voucher
-  if (newVoucher.duration) {
+  if (newVoucher.qos_usage_quota) {
+    payload.bytes = +newVoucher.qos_usage_quota;
+    payload.minutes = 0; // Unlimited time for data vouchers
+  } else if (newVoucher.duration) {
+    // Only set time limit if no data limit exists
     payload.minutes = newVoucher.duration;
   }
-
-  // Add data limit if it's a data-based voucher
-  if (newVoucher.qos_usage_quota) {
-    payload. bytes = +newVoucher.qos_usage_quota;
-   
-  }
+  
 
   console.log("🔑 Authorization attempt:", JSON.stringify(payload, null, 2));
 
