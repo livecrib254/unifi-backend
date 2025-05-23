@@ -56,7 +56,8 @@ const login = async () => {
     }
 };
 
-async function createVouchers(duration = 10) {
+async function createVouchers(duration = 10,  expire_number,
+    expire_unit,) {
     const cookie = await login();
     try {
         const response = await axios.post(
@@ -64,15 +65,15 @@ async function createVouchers(duration = 10) {
             {
                 cmd: "create-voucher",
                 expire: duration,
-                expire_number: 1,
-                expire_unit: 1,
                 n: 1,
                 quota: 1,
                 note: "Hotspot Auth",
                 up: null,
                 down: null,
                 bytes: null,
-                for_hotspot: true
+                for_hotspot: true,
+                expire_number,
+                expire_unit,
             },
             { 
                 headers: { 
@@ -105,32 +106,30 @@ async function createVouchers(duration = 10) {
 async function createDataVoucher(dataBytes) {
     const cookie = await login();
     if (!cookie) return null;
-    console.log(dataBytes * 1024 * 1024)
     try {
         const response = await axios.post(
             `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
             {
-                cmd: "create-voucher",
-                n: 1,
-                quota: 1,
-                note: "Hotspot Data Auth",
-                bytes: dataBytes,
-                expire: 525600, // 365 days in minutes
-                expire_number: 365,
-                expire_unit: 1440, // 1440 = days (in minutes)
-                up: null,
-                down: null,
-                for_hotspot: true
+              cmd: "create-voucher",
+              n: 1,                        // number of vouchers
+              quota: 1,                    // number of uses
+              note: "Hotspot Data Auth",
+              bytes: dataBytes,    // 100MB in bytes
+              expire: 525600,              // how long the voucher exists (365 days in minutes)
+              expire_number: 365,
+              expire_unit: 1440,           // 1440 = 1 day
+              up: null,                    // optional upload speed limit
+              down: null,                  // optional download speed limit
+              for_hotspot: true
             },
             {
-                headers: {
-                    Cookie: cookie,
-                    'Content-Type': 'application/json'
-                },
-                httpsAgent: new https.Agent({ rejectUnauthorized: false })
+              headers: {
+                Cookie: cookie,
+                'Content-Type': 'application/json'
+              },
+              httpsAgent: new https.Agent({ rejectUnauthorized: false })
             }
-        );
-        
+          );
         console.log("Data voucher creation response:", JSON.stringify(response.data, null, 2));
         
         if (response.data?.meta?.rc === "ok") {
@@ -211,10 +210,12 @@ async function authorizeClient(clientMac, options = {}) {
         return false;
     }
 
-    const { duration, data } = options;
+    const { duration, data, expire_number,
+        expire_unit } = options;
     let newVoucher;
     if (duration) {
-        newVoucher = await createVouchers(duration);
+        newVoucher = await createVouchers(duration,  expire_number,
+            expire_unit);
     } else if (data) {
         // Assuming 1 MB = 1024 * 1024 bytes
         const dataBytes = data 
@@ -299,14 +300,16 @@ async function testInternetConnection() {
 // Updated POST endpoint to handle client authentication
 
 app.post("/auth", async (req, res) => {
-    const { clientMac, duration, data } = req.body;
+    const { clientMac, duration, data, expire_number,
+        expire_unit, } = req.body;
 
     if (!clientMac) {
         return res.status(400).json({ success: false, message: "Client MAC is required" });
     }
 
     try {
-        const authorized = await authorizeClient(clientMac, { duration, data });
+        const authorized = await authorizeClient(clientMac, { duration, data , expire_number,
+            expire_unit,});
 
         if (!authorized) {
             return res.status(500).json({ success: false, message: "Authorization failed" });
