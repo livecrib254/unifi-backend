@@ -264,7 +264,7 @@ async function authorizeClient(clientMac, options = {}) {
 
   // Add data limit if it's a data-based voucher
   if (newVoucher.bytes) {
-    payload.qos_usage_quota = newVoucher.qos_usage_quota;
+    payload. bytes = newVoucher.qos_usage_quota;
     // You might also need to specify it's unlimited time for data vouchers
     payload.minutes = newVoucher.duration; // or remove minutes entirely
   }
@@ -289,16 +289,10 @@ async function authorizeClient(clientMac, options = {}) {
       return true;
     }
 
-    // Try fallback
-    const altPayload = {
-      cmd: "authorize-guest",
-      mac: clientMac.toLowerCase(),
-      voucher_code: newVoucher.code,
-    };
-
+   
     const altResponse = await axios.post(
       `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
-      altPayload,
+      payload,
       {
         headers: {
           Cookie: cookie,
