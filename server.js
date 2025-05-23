@@ -56,7 +56,7 @@ const login = async () => {
     }
 };
 
-async function createVouchers(duration = 10) {
+async function createVouchers(duration = 10, clientMac) {
     const cookie = await login();
     try {
         const response = await axios.post(
@@ -68,7 +68,7 @@ async function createVouchers(duration = 10) {
                 expire_unit: 1,
                 n: 1,
                 quota: 1,
-                note: "Hotspot Auth",
+                note: `Hotspot Auth - ${clientMac}`,
                 up: null,
                 down: null,
                 bytes: null,
@@ -102,7 +102,7 @@ async function createVouchers(duration = 10) {
     }
 }
 
-async function createDataVoucher(dataBytes) {
+async function createDataVoucher(dataBytes, clientMac) {
     const cookie = await login();
     if (!cookie) return null;
     console.log(dataBytes)
@@ -113,7 +113,7 @@ async function createDataVoucher(dataBytes) {
                 cmd: "create-voucher",
                 n: 1,
                 quota: 1,
-                note: "Hotspot Data Auth",
+                note: `Hotspot Auth - ${clientMac}`,
                 bytes: dataBytes,
                 expire: 525600, // 365 days in minutes
                 expire_number: 365,
@@ -204,6 +204,35 @@ async function listSites() {
     }
 }
 
+async function deleteOldVouchersForClient(clientMac) {
+    const cookie = await login();
+    const allVouchers = await getVouchers();
+    const matched = allVouchers.filter(v => v.note?.includes(clientMac));
+
+    for (const voucher of matched) {
+        try {
+            await axios.post(
+                `${UNIFI_URL}/api/s/${SITE}/cmd/hotspot`,
+                {
+                    cmd: "delete-voucher",
+                    _id: voucher._id
+                },
+                {
+                    headers: {
+                        Cookie: cookie,
+                        'Content-Type': 'application/json'
+                    },
+                    httpsAgent: new https.Agent({ rejectUnauthorized: false })
+                }
+            );
+            console.log(`🗑️ Deleted voucher: ${voucher.code}`);
+        } catch (error) {
+            console.warn(`⚠️ Failed to delete voucher ${voucher.code}:`, error.response?.data || error.message);
+        }
+    }
+}
+
+
 async function authorizeClient(clientMac, options = {}) {
     const cookie = await login();
     if (!cookie) {
@@ -211,15 +240,18 @@ async function authorizeClient(clientMac, options = {}) {
         return false;
     }
 
+    
+    // 🗑️ Delete old vouchers first
+    await deleteOldVouchersForClient(clientMac);
+
     const { duration, data } = options;
-     console.log(options)
     let newVoucher;
     if (duration) {
-        newVoucher = await createVouchers(duration);
+        newVoucher = await createVouchers(duration, clientMac);
     } else if (data) {
         // Assuming 1 MB = 1024 * 1024 bytes
         const dataBytes = data 
-        newVoucher = await createDataVoucher(dataBytes);
+        newVoucher = await createDataVoucher(dataBytes, clientMac);
     } else {
         throw new Error("Must provide either duration or data");
     }
@@ -370,7 +402,8 @@ app.post("/simulate-payment", async (req, res) => {
 //   }
 
 app.get("/", (req, res) => {
-    listSites()
+    //createDataVoucher(20, "08:31:8b:90:50:f8")
+    //deleteOldVouchersForClient("08:31:8b:90:50:f8")
     res.json({ message: "UniFi Hotspot Server Running" });
 });
 
