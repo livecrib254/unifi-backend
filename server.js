@@ -38,7 +38,7 @@ const axiosInstance = axios.create({
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// UniFi helper Functions
+// UniFi helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
 const login = async () => {
@@ -245,12 +245,18 @@ function formatKEPhone(phone) {
  * Returns { reference } so the caller can poll / await webhook.
  */
 
-async function initiatePaystackMpesa({ phone, amountKES, metadata = {} }) {
+async function initiatePaystackMpesa({ phone, amountKES, email, metadata = {} }) {
+  
   const formattedPhone = formatKEPhone(phone);
   const reference = `HOTSPOT-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 
+
+  // ✅ Random domain pick
+  const domains = ["gmail.com", "yahoo.com", "outlook.com"];
+  const randomDomain = domains[Math.floor(Math.random() * domains.length)];
+
   const payload = {
-    email: PAYSTACK_EMAIL, // Paystack requires an email
+    email: email || `${formattedPhone.replace("+", "")}@${randomDomain}`, // Paystack requires a clients email to send payment receipt 
     amount: amountKES * 100, // Paystack uses kobo/cents (KES * 100)
     currency: "KES",
     reference,
@@ -293,7 +299,7 @@ async function verifyPaystackTransaction(reference) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Payment Routes
+// Routes
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Health check */
@@ -308,8 +314,8 @@ app.get("/api", (_req, res) => {
  * Body: { phoneNumber, clientMac, amount, duration?, data?, expire_number?, expire_unit? }
  */
 
-app.post("/api/initiate-payment", async (req, res) => {
-  const { phoneNumber, clientMac, amount, duration, data, expire_number, expire_unit } = req.body;
+app.post("/initiate-payment", async (req, res) => {
+  const { phoneNumber, clientMac, amount, email, duration, data, expire_number, expire_unit } = req.body;
 
   if (!phoneNumber || !clientMac || !amount) {
     return res.status(400).json({
@@ -320,12 +326,12 @@ app.post("/api/initiate-payment", async (req, res) => {
 
   try {
     const { reference, status, displayText } = await initiatePaystackMpesa({
-      phone: phoneNumber,
+      phone:     phoneNumber,
       amountKES: amount,
-      metadata: { clientMac, duration, data, expire_number, expire_unit },
+      email,
+      metadata:  { clientMac, duration, data, expire_number, expire_unit },
     });
 
-    // Store pending payment details keyed by reference
     pendingPayments.set(reference, {
       clientMac,
       duration,
@@ -334,14 +340,14 @@ app.post("/api/initiate-payment", async (req, res) => {
       expire_unit,
     });
 
-   // console.log(`🔖 Stored pending payment [${reference}] for MAC ${clientMac}`);
+    console.log(`🔖 Pending payment stored [${reference}] for MAC ${clientMac}`);
 
     res.json({
-      success: true,
+      success:     true,
       reference,
-      status,          // "pay_offline" means STK push sent
+      status,
       displayText,
-      message: "STK push sent. Please complete payment on your phone.",
+      message:     "STK push sent. Please complete payment on your phone.",
     });
   } catch (error) {
     console.error("❌ Payment initiation error:", error.response?.data || error.message);
@@ -415,7 +421,7 @@ app.post("/api/webhook/paystack", async (req, res) => {
   const signature = req.headers["x-paystack-signature"];
 
   console.log(signature)
-  
+
   const hash = crypto
     .createHmac("sha512", PAYSTACK_WEBHOOK_SECRET)
     .update(JSON.stringify(req.body))
