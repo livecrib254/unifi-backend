@@ -314,7 +314,7 @@ app.get("/api", (_req, res) => {
  * Body: { phoneNumber, clientMac, amount, duration?, data?, expire_number?, expire_unit? }
  */
 
-app.post("/initiate-payment", async (req, res) => {
+app.post("/api/initiate-payment", async (req, res) => {
   const { phoneNumber, clientMac, amount, email, duration, data, expire_number, expire_unit } = req.body;
 
   if (!phoneNumber || !clientMac || !amount) {
