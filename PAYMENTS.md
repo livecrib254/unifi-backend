@@ -81,7 +81,7 @@ Paystack brokers the M-Pesa transaction for you. No Safaricom app required.
 ```
 PAYMENT_PROVIDER=paystack
 
-PAYSTACK_SECRET_KEY=sk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+PAYSTACK_SECRET_KEY=sk
 # PAYSTACK_EMAIL=owner@example.com   # optional; a placeholder is auto-generated otherwise
 ```
 
