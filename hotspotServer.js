@@ -18,14 +18,38 @@ const SITE = process.env.UNIFI_SITE;
 const USERNAME = process.env.UNIFI_USERNAME;
 const PASSWORD = process.env.UNIFI_PASSWORD;
 
+// Payment Provider selection
+// Which gateway to use for M-Pesa payments: "paystack" or "daraja".
+// Defaults to "paystack" to preserve existing behaviour.
+
+const PAYMENT_PROVIDER = (process.env.PAYMENT_PROVIDER || "paystack").toLowerCase();
+
 //Paystack Config
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY; // sk_live_... or sk_test_...
-const PAYSTACK_WEBHOOK_SECRET = process.env.PAYSTACK_SECRET_KEY; 
+const PAYSTACK_WEBHOOK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_EMAIL = process.env.PAYSTACK_EMAIL //paystack account's holder Email
 
-// ── In-memory pending payments store 
-// Maps paystack reference → { clientMac, duration, data, expire_number, expire_unit }
+// Daraja (Safaricom M-Pesa) Config
+// Used only when PAYMENT_PROVIDER=daraja. See PAYMENTS.md for how to obtain these.
+
+const DARAJA_ENV              = (process.env.DARAJA_ENV || "sandbox").toLowerCase(); // "sandbox" | "production"
+const DARAJA_CONSUMER_KEY     = process.env.DARAJA_CONSUMER_KEY;
+const DARAJA_CONSUMER_SECRET  = process.env.DARAJA_CONSUMER_SECRET;
+const DARAJA_SHORTCODE        = process.env.DARAJA_SHORTCODE;        // Paybill or Till (business short code)
+const DARAJA_PASSKEY          = process.env.DARAJA_PASSKEY;          // Lipa Na M-Pesa Online passkey
+const DARAJA_TRANSACTION_TYPE = process.env.DARAJA_TRANSACTION_TYPE || "CustomerPayBillOnline"; // or CustomerBuyGoodsOnline (Till)
+const DARAJA_CALLBACK_URL     = process.env.DARAJA_CALLBACK_URL;     // public https URL → POST /api/webhook/daraja
+const DARAJA_ACCOUNT_REF      = process.env.DARAJA_ACCOUNT_REF || "HOTSPOT"; // shown on paybill account field
+
+const DARAJA_BASE_URL = DARAJA_ENV === "production"
+  ? "https://api.safaricom.co.ke"
+  : "https://sandbox.safaricom.co.ke";
+
+// ── In-memory pending payments store
+// Maps payment reference → { clientMac, duration, data, expire_number, expire_unit, authorized? }
+// For Paystack the reference is the Paystack transaction reference.
+// For Daraja the reference is the STK CheckoutRequestID.
 
 const pendingPayments = new Map();
 
@@ -299,6 +323,169 @@ async function verifyPaystackTransaction(reference) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Daraja (Safaricom M-Pesa) helper Functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Normalise a Kenyan phone number to the 2547XXXXXXXX / 2541XXXXXXXX MSISDN
+ * format Daraja expects (12 digits, no leading + or 0).
+ */
+function formatKEMsisdn(phone) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("254") && digits.length === 12) return digits;
+  if (digits.startsWith("0") && digits.length === 10) return `254${digits.slice(1)}`;
+  if (digits.length === 9) return `254${digits}`;
+  throw new Error(`Invalid Kenyan phone number: ${phone}`);
+}
+
+/**
+ * Build the timestamp (YYYYMMDDHHmmss) and Base64 password Daraja requires.
+ * password = Base64(Shortcode + Passkey + Timestamp)
+ */
+function darajaPassword() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const timestamp =
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+  const password = Buffer
+    .from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`)
+    .toString("base64");
+
+  return { timestamp, password };
+}
+
+/**
+ * Fetch a short-lived OAuth access token from Daraja using the
+ * consumer key/secret pair (HTTP Basic auth).
+ */
+async function getDarajaToken() {
+  const auth = Buffer
+    .from(`${DARAJA_CONSUMER_KEY}:${DARAJA_CONSUMER_SECRET}`)
+    .toString("base64");
+
+  const response = await axios.get(
+    `${DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`,
+    { headers: { Authorization: `Basic ${auth}` } }
+  );
+
+  return response.data.access_token;
+}
+
+/**
+ * Initiate a Daraja STK push (Lipa Na M-Pesa Online).
+ * Returns { reference } where reference is the CheckoutRequestID used to
+ * later query the transaction status.
+ */
+async function initiateDarajaStk({ phone, amountKES }) {
+  const token = await getDarajaToken();
+  const { timestamp, password } = darajaPassword();
+  const msisdn = formatKEMsisdn(phone);
+
+  const payload = {
+    BusinessShortCode: DARAJA_SHORTCODE,
+    Password:          password,
+    Timestamp:         timestamp,
+    TransactionType:   DARAJA_TRANSACTION_TYPE, // CustomerPayBillOnline | CustomerBuyGoodsOnline
+    Amount:            Math.round(amountKES),   // Daraja only accepts whole shillings
+    PartyA:            msisdn,
+    PartyB:            DARAJA_SHORTCODE,
+    PhoneNumber:       msisdn,
+    CallBackURL:       DARAJA_CALLBACK_URL,
+    AccountReference:  DARAJA_ACCOUNT_REF.slice(0, 12),
+    TransactionDesc:   "Hotspot Access",
+  };
+
+  const response = await axios.post(
+    `${DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest`,
+    payload,
+    { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
+  );
+
+  const data = response.data;
+
+  // ResponseCode "0" means the STK push was accepted for processing.
+  if (data.ResponseCode !== "0") {
+    throw new Error(data.ResponseDescription || data.errorMessage || "STK push rejected");
+  }
+
+  return {
+    reference:   data.CheckoutRequestID,
+    status:      "pending",
+    displayText: data.CustomerMessage,
+  };
+}
+
+/**
+ * Query the status of a Daraja STK push by CheckoutRequestID.
+ * Returns { status: "success" | "pending" | "failed", resultCode, resultDesc }.
+ */
+async function queryDarajaStk(checkoutRequestId) {
+  const token = await getDarajaToken();
+  const { timestamp, password } = darajaPassword();
+
+  try {
+    const response = await axios.post(
+      `${DARAJA_BASE_URL}/mpesa/stkpushquery/v1/query`,
+      {
+        BusinessShortCode: DARAJA_SHORTCODE,
+        Password:          password,
+        Timestamp:         timestamp,
+        CheckoutRequestID: checkoutRequestId,
+      },
+      { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
+    );
+
+    const data = response.data;
+    // ResultCode "0" = paid, anything else = failed/cancelled.
+    if (data.ResultCode === "0" || data.ResultCode === 0) {
+      return { status: "success", resultCode: "0", resultDesc: data.ResultDesc };
+    }
+    return { status: "failed", resultCode: String(data.ResultCode), resultDesc: data.ResultDesc };
+  } catch (error) {
+    // While the customer has not yet acted, Daraja returns HTTP 500 with
+    // errorCode 500.001.1001 ("transaction is being processed"). Treat as pending.
+    const errCode = error.response?.data?.errorCode;
+    if (errCode === "500.001.1001") {
+      return { status: "pending", resultCode: null, resultDesc: "Awaiting customer" };
+    }
+    throw error;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Provider dispatch — a thin layer so the routes stay provider-agnostic
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Initiate a payment with the configured provider.
+ * Returns { reference, status, displayText }.
+ */
+async function initiatePayment({ phone, amountKES, email, metadata }) {
+  if (PAYMENT_PROVIDER === "daraja") {
+    return initiateDarajaStk({ phone, amountKES });
+  }
+  return initiatePaystackMpesa({ phone, amountKES, email, metadata });
+}
+
+/**
+ * Check the status of a payment with the configured provider.
+ * Returns { status: "success" | "pending" | "failed" }.
+ */
+async function checkPaymentStatus(reference) {
+  if (PAYMENT_PROVIDER === "daraja") {
+    const { status } = await queryDarajaStk(reference);
+    return { status };
+  }
+  const txn = await verifyPaystackTransaction(reference);
+  // Normalise Paystack statuses ("success" | "failed" | "abandoned" | "pending" | ...)
+  if (txn.status === "success") return { status: "success" };
+  if (txn.status === "failed" || txn.status === "abandoned") return { status: "failed" };
+  return { status: "pending" };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Routes
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -325,7 +512,7 @@ app.post("/api/initiate-payment", async (req, res) => {
   }
 
   try {
-    const { reference, status, displayText } = await initiatePaystackMpesa({
+    const { reference, status, displayText } = await initiatePayment({
       phone:     phoneNumber,
       amountKES: amount,
       email,
@@ -338,13 +525,15 @@ app.post("/api/initiate-payment", async (req, res) => {
       data,
       expire_number,
       expire_unit,
+      authorized: false,
     });
 
-    console.log(`🔖 Pending payment stored [${reference}] for MAC ${clientMac}`);
+    console.log(`🔖 Pending payment stored [${reference}] for MAC ${clientMac} via ${PAYMENT_PROVIDER}`);
 
     res.json({
       success:     true,
       reference,
+      provider:    PAYMENT_PROVIDER,
       status,
       displayText,
       message:     "STK push sent. Please complete payment on your phone.",
@@ -368,11 +557,16 @@ app.get("/api/verify-payment/:reference", async (req, res) => {
   const { reference } = req.params;
 
   try {
-    const txn = await verifyPaystackTransaction(reference);
+    const pending = pendingPayments.get(reference);
 
-    if (txn.status === "success") {
-      const pending = pendingPayments.get(reference);
+    // If a webhook/callback already authorised this client, report success.
+    if (pending?.authorized) {
+      return res.json({ success: true, status: "success", clientMac: pending.clientMac });
+    }
 
+    const { status } = await checkPaymentStatus(reference);
+
+    if (status === "success") {
       if (!pending) {
         // Already processed or unknown reference
         return res.json({ success: true, status: "success", alreadyProcessed: true });
@@ -387,7 +581,7 @@ app.get("/api/verify-payment/:reference", async (req, res) => {
         expire_unit,
       });
 
-      console.log("Authorized",authorized)
+      console.log("Authorized", authorized);
 
       pendingPayments.delete(reference);
 
@@ -403,7 +597,7 @@ app.get("/api/verify-payment/:reference", async (req, res) => {
     }
 
     // still pending / failed
-    res.json({ success: false, status: txn.status });
+    res.json({ success: false, status });
   } catch (error) {
     console.error("❌ Verify payment error:", error.response?.data || error.message);
     res.status(500).json({ success: false, message: error.message });
@@ -440,13 +634,16 @@ app.post("/api/webhook/paystack", async (req, res) => {
 
     const pending = pendingPayments.get(reference);
 
-    if (pending) {
-      const { clientMac, duration, dataBytes, expire_number, expire_unit } = pending;
+    if (pending && !pending.authorized) {
+      const { clientMac, duration, data, expire_number, expire_unit } = pending;
 
       try {
-        await authorizeClient(clientMac, { duration, data: dataBytes, expire_number, expire_unit });
-        pendingPayments.delete(reference);
-        console.log(`✅ Client ${clientMac} authorised via webhook`);
+        const authorized = await authorizeClient(clientMac, { duration, data, expire_number, expire_unit });
+        if (authorized) {
+          // Flag rather than delete so a racing poll still reports success.
+          pendingPayments.set(reference, { ...pending, authorized: true });
+          console.log(`✅ Client ${clientMac} authorised via webhook`);
+        }
       } catch (err) {
         console.error("❌ Webhook authorisation error:", err.message);
       }
@@ -455,6 +652,56 @@ app.post("/api/webhook/paystack", async (req, res) => {
 
   // Always respond 200 quickly so Paystack doesn't retry
   res.sendStatus(200);
+});
+
+/**
+ * POST /webhook/daraja
+ * Safaricom posts the STK push result here (the CallBackURL supplied on push).
+ * On ResultCode 0 the payment succeeded → authorise the UniFi client.
+ */
+
+app.post("/api/webhook/daraja", async (req, res) => {
+  try {
+    const callback = req.body?.Body?.stkCallback;
+
+    if (!callback) {
+      console.warn("⚠️  Daraja callback: unexpected payload shape");
+      return res.json({ ResultCode: 0, ResultDesc: "Ignored" });
+    }
+
+    const { CheckoutRequestID, ResultCode, ResultDesc } = callback;
+    console.log(`📥 Daraja callback [${CheckoutRequestID}] ResultCode=${ResultCode} (${ResultDesc})`);
+
+    if (String(ResultCode) === "0") {
+      const pending = pendingPayments.get(CheckoutRequestID);
+
+      if (pending && !pending.authorized) {
+        const { clientMac, duration, data, expire_number, expire_unit } = pending;
+
+        try {
+          const authorized = await authorizeClient(clientMac, {
+            duration,
+            data,
+            expire_number,
+            expire_unit,
+          });
+
+          if (authorized) {
+            // Keep the record briefly, flagged, so a racing poll returns success.
+            pendingPayments.set(CheckoutRequestID, { ...pending, authorized: true });
+            console.log(`✅ Client ${clientMac} authorised via Daraja callback`);
+          }
+        } catch (err) {
+          console.error("❌ Daraja callback authorisation error:", err.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("❌ Daraja callback error:", err.message);
+  }
+
+  // Acknowledge so Safaricom stops retrying.
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
 /**
@@ -486,4 +733,6 @@ app.post("/api/auth", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT} — payment provider: ${PAYMENT_PROVIDER}`)
+);
