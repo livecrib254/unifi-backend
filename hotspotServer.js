@@ -268,7 +268,7 @@ async function authorizeClient(clientMac, options = {}) {
         httpsAgent: new https.Agent({ rejectUnauthorized: false }),
       }
     );
-
+     
     if (response.data.meta?.rc === "ok") {
       console.log("✅ Authorization successful");
       return true;
