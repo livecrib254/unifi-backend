@@ -74,7 +74,7 @@ const login = async () => {
     );
 
     if (response.data?.meta?.rc === "ok") {
-      console.log("✅ UniFi Login Successful!");
+      console.log("✅ UniFi Login Successful!", response);
       const cookies = response.headers["set-cookie"];
       return Array.isArray(cookies) ? cookies.join("; ") : cookies;
     }
@@ -86,6 +86,41 @@ const login = async () => {
     return null;
   }
 };
+
+const getSites = async () => {
+  try {
+    const cookies = await login();
+    if (!cookies) {
+      console.error("❌ Cannot fetch sites: login failed");
+      return null;
+    }
+
+    const response = await axiosInstance.get(
+      `${UNIFI_URL}/api/self/sites`,
+      {
+        headers: { Cookie: cookies },
+        withCredentials: true,
+      }
+    );
+
+    if (response.data?.meta?.rc === "ok") {
+      console.log("✅ Fetched UniFi Sites!", response.data.data);
+      return response.data.data.map((site) => ({
+        id: site._id,
+        name: site.name,
+        desc: site.desc,
+      }));
+    }
+
+    console.error("❌ Failed to fetch sites:", response.data);
+    return null;
+  } catch (error) {
+    console.error("❌ UniFi Sites Error:", error.response?.data || error.message);
+    return null;
+  }
+};
+
+
 
 async function getVouchers() {
   const cookie = await login();
@@ -547,6 +582,17 @@ app.post("/api/initiate-payment", async (req, res) => {
   }
 });
 
+// Express route wrapper
+app.get("/sites", async (req, res) => {
+  const sites = await getSites();
+  console.log(JSON.stringify(sites, null, 2));
+  if (!sites) {
+    return res.status(500).json({ success: false, error: "Failed to fetch sites from UniFi controller" });
+  }
+  res.json({ success: true, sites });
+});
+
+
 /**
  * GET /verify-payment/:reference
  * Poll this endpoint from the frontend to check payment status.
@@ -583,16 +629,24 @@ app.get("/api/verify-payment/:reference", async (req, res) => {
 
       console.log("Authorized", authorized);
 
-      pendingPayments.delete(reference);
-
       if (authorized) {
+        // Keep the record briefly (flagged) so racing polls also see success,
+        // then only remove it once authorisation actually succeeded.
+        pendingPayments.set(reference, { ...pending, authorized: true });
         return res.json({ success: true, status: "success", clientMac });
       }
 
-      return res.status(500).json({
+      // Payment succeeded but UniFi could not be reached / authorised.
+      // Mark as paid (but not authorised) and KEEP the record so both the next
+      // poll AND the background sweep retry once the controller is reachable.
+      // The customer already paid — we must never drop this.
+      pendingPayments.set(reference, { ...pending, paid: true });
+      return res.status(503).json({
         success: false,
         status: "success",
-        message: "Payment received but UniFi authorisation failed",
+        paid: true,
+        retrying: true,
+        message: "Payment received. Activating your access — please wait…",
       });
     }
 
@@ -732,6 +786,72 @@ app.post("/api/auth", async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+
+app.get("/api/auth", async (req, res) => {
+  const { clientMac="fa:16:9a:73:df:b8", duration=5, data, expire_number, expire_unit } = req.body;
+
+  if (!clientMac) {
+    return res.status(400).json({ success: false, message: "Client MAC is required" });
+  }
+
+  try {
+    const authorized = await authorizeClient(clientMac, {
+      duration,
+      data,
+      expire_number,
+      expire_unit,
+    });
+
+    if (!authorized) {
+      return res.status(500).json({ success: false, message: "Authorization failed" });
+    }
+
+    res.json({ success: true, message: "Client authorized", clientMac });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Background retry sweep
+// Re-attempts UniFi authorisation for payments that succeeded but whose
+// authorisation failed (e.g. the controller was briefly unreachable —
+// ECONNREFUSED). This guarantees a paying customer eventually gets online even
+// if they closed the portal before the controller came back.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const RETRY_SWEEP_MS = 30_000;
+
+async function retryPaidAuthorizations() {
+  for (const [reference, pending] of pendingPayments) {
+    if (!pending.paid || pending.authorized) continue;
+
+    try {
+      const authorized = await authorizeClient(pending.clientMac, {
+        duration:      pending.duration,
+        data:          pending.data,
+        expire_number: pending.expire_number,
+        expire_unit:   pending.expire_unit,
+      });
+
+      if (authorized) {
+        pendingPayments.set(reference, { ...pending, authorized: true });
+        console.log(`✅ Retry sweep authorised paid client ${pending.clientMac} [${reference}]`);
+      } else {
+        console.warn(`⏳ Retry sweep: UniFi still unavailable for ${pending.clientMac} [${reference}]`);
+      }
+    } catch (err) {
+      console.error(`❌ Retry sweep error for ${reference}:`, err.message);
+    }
+  }
+}
+
+setInterval(() => {
+  retryPaidAuthorizations().catch((err) =>
+    console.error("❌ Retry sweep crashed:", err.message)
+  );
+}, RETRY_SWEEP_MS);
 
 app.listen(PORT, () =>
   console.log(`🚀 Server running on port ${PORT} — payment provider: ${PAYMENT_PROVIDER}`)

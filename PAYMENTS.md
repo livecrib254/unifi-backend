@@ -196,7 +196,41 @@ logic, so no frontend or code changes are needed.
 | `GET  /api/verify-payment/:reference`| Poll payment status; authorises on success.         |
 | `POST /api/webhook/paystack`         | Paystack `charge.success` callback (signed).        |
 | `POST /api/webhook/daraja`           | Safaricom STK result callback.                      |
-| `POST /api/auth`                     | Admin/testing: authorise a MAC directly, no payment.|
+| `POST /api/auth`                     | **Production/admin:** authorise a MAC directly, no payment (needs `clientMac`).|
+| `POST /api/test-authorize`           | **Test only:** dummy payment + authorise. Disabled unless `ENABLE_TEST_ROUTE=true`.|
+
+### Test route — dummy payment (development only)
+
+Use this to verify the authorise-on-payment flow **without spending money**.
+
+1. In `.env` set:
+   ```
+   ENABLE_TEST_ROUTE=true
+   ```
+   (Leave it `false`/unset in production — the route returns `403` when disabled.)
+2. Temporarily set the MAC/duration you want to test in `TEST_DEFAULTS` at the
+   top of `hotspotServer.js`:
+   ```js
+   const TEST_DEFAULTS = {
+     clientMac:     "fa:16:9a:73:df:b8", // ← the device MAC to authorise
+     duration:      10,                  // ← minutes
+     expire_number: 10,
+     expire_unit:   1,
+     data:          undefined,           // set MB (and drop duration) for a data plan
+   };
+   ```
+3. Restart the server, then call it. Any body field overrides the defaults:
+   ```bash
+   # Uses TEST_DEFAULTS as-is
+   curl -X POST http://localhost:5000/api/test-authorize
+
+   # Or override per-call
+   curl -X POST http://localhost:5000/api/test-authorize \
+     -H "Content-Type: application/json" \
+     -d '{ "clientMac": "aa:bb:cc:dd:ee:ff", "duration": 30 }'
+   ```
+   A dummy `TEST-xxxx` reference is logged so it mirrors the real flow. The real
+   money paths (`/api/initiate-payment`, webhooks) are untouched and always live.
 
 **`POST /api/initiate-payment` body**
 ```json
