@@ -10,7 +10,7 @@
 
 # production
 /build
-./PAYMENTS.md
+PAYMENTS.md
 # misc
 .DS_Store
 .env
