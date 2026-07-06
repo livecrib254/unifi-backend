@@ -592,6 +592,114 @@ app.get("/sites", async (req, res) => {
   res.json({ success: true, sites });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Live session status (for the client-side timer / data-balance display)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Fetch the guest authorisation records (start/end/quota/usage) for the site.
+ * This is the source of truth for how much time / data a client has left.
+ */
+async function getGuestSessions(cookie) {
+  const response = await axios.get(`${UNIFI_URL}/api/s/${SITE}/stat/guest`, {
+    headers: { Cookie: cookie },
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+  });
+  return response.data.data || [];
+}
+
+/**
+ * Fetch live station stats (current rx/tx bytes) for a connected client.
+ * More up-to-date for data usage than the guest record; may be null if the
+ * client is momentarily disconnected.
+ */
+async function getStation(cookie, mac) {
+  try {
+    const response = await axios.get(`${UNIFI_URL}/api/s/${SITE}/stat/sta`, {
+      headers: { Cookie: cookie },
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    });
+    return (response.data.data || []).find((s) => s.mac === mac) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /api/session/:mac
+ * Returns the client's live remaining time / data, read from UniFi.
+ *
+ * Response:
+ *   {
+ *     online: boolean,
+ *     type: "time" | "data" | null,
+ *     expiresAt: <unix ms> | null,   // absolute end time — client anchors its countdown to this
+ *     durationMin: number | null,
+ *     quotaBytes: number | null,     // total data allowance
+ *     usedBytes: number,             // data consumed so far
+ *     remainingBytes: number | null,
+ *     serverNow: <unix ms>           // so the client can correct for clock skew
+ *   }
+ *
+ * Add ?debug=1 to also get the raw UniFi guest record (to verify field names
+ * on your controller version).
+ */
+app.get("/api/session/:mac", async (req, res) => {
+  const mac = req.params.mac.toLowerCase();
+
+  try {
+    const cookie = await login();
+    if (!cookie) {
+      return res.status(503).json({ online: false, reason: "controller_unreachable" });
+    }
+
+    const guests = await getGuestSessions(cookie);
+    const nowMs = Date.now();
+
+    // Pick the most recent still-valid authorisation for this MAC.
+    const active = guests
+      .filter((g) => (g.mac || "").toLowerCase() === mac)
+      .filter((g) => !g.end || g.end * 1000 > nowMs)
+      .sort((a, b) => (b.start || 0) - (a.start || 0))[0];
+
+    if (!active) {
+      return res.json({ online: false, type: null, expiresAt: null, serverNow: nowMs });
+    }
+
+    // Live byte usage: prefer station stats, fall back to the guest record.
+    const station = await getStation(cookie, mac);
+    const rx = station?.rx_bytes ?? active.rx_bytes ?? 0;
+    const tx = station?.tx_bytes ?? active.tx_bytes ?? 0;
+    const usedBytes = (station?.bytes ?? active.bytes ?? rx + tx) || 0;
+
+    // qos_usage_quota is expressed in MEGABYTES on UniFi voucher/guest records.
+    // Verify against ?debug=1 for your controller and adjust the multiplier if needed.
+    const quotaBytes = active.qos_usage_quota
+      ? Math.round(Number(active.qos_usage_quota) * 1024 * 1024)
+      : null;
+
+    const type = quotaBytes ? "data" : "time";
+
+    const payload = {
+      online: true,
+      type,
+      expiresAt: active.end ? active.end * 1000 : null,
+      durationMin: active.duration ?? null,
+      quotaBytes,
+      usedBytes,
+      remainingBytes: quotaBytes != null ? Math.max(0, quotaBytes - usedBytes) : null,
+      serverNow: nowMs,
+    };
+
+    if (req.query.debug) payload._raw = active;
+
+    res.json(payload);
+  } catch (error) {
+    console.error("❌ Session status error:", error.response?.data || error.message);
+    res.status(500).json({ online: false, reason: "error", message: error.message });
+  }
+});
+
 
 /**
  * GET /verify-payment/:reference

@@ -194,6 +194,7 @@ logic, so no frontend or code changes are needed.
 |--------------------------------------|-----------------------------------------------------|
 | `POST /api/initiate-payment`         | Start an STK push. Returns `{ reference, provider }`.|
 | `GET  /api/verify-payment/:reference`| Poll payment status; authorises on success.         |
+| `GET  /api/session/:mac`             | Live remaining time / data for a client (timer & balance). `?debug=1` for raw UniFi record.|
 | `POST /api/webhook/paystack`         | Paystack `charge.success` callback (signed).        |
 | `POST /api/webhook/daraja`           | Safaricom STK result callback.                      |
 | `POST /api/auth`                     | **Production/admin:** authorise a MAC directly, no payment (needs `clientMac`).|
